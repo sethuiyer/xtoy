@@ -6,6 +6,9 @@ from sklearn import svm
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.linear_model import Ridge, RidgeClassifier
 from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
+from sklearn.svm import SVC, SVR
+from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor, ExtraTreeClassifier, ExtraTreeRegressor
+
 
 from xtoy.utils import classification_or_regression
 
@@ -93,10 +96,50 @@ knn_regression = {
     "max_complexity": 100000 * 100,
 }
 
+decision_tree_classifier_grid = {
+    "estimator__criterion":["entropy","gini"],
+    "estimator__max_depth": [None, 5, 10, 20],
+    "estimator__min_samples_leaf": [1, 5, 10],
+    "estimator__min_samples_split": [2, 10, 20]
+}
+
+decision_tree_regressor_grid = {
+    "estimator__criterion":["mse","mae"],
+    "estimator__max_depth": [None, 5, 10, 20],
+    "estimator__min_samples_leaf": [1, 5, 10],
+    "estimator__min_samples_split": [2, 10, 20]
+}
+
+dtree_classifier = {
+    "clf": DecisionTreeClassifier,
+    "grid": decision_tree_classifier_grid,
+    "name": "dtree",
+    "max_complexity": 100000 * 10
+}
+
+dtree_regressor = {
+    "clf": DecisionTreeRegressor,
+    "grid": decision_tree_regressor_grid,
+    "name": "dtree",
+    "max_complexity": 100000 * 10
+}
+
+etree_classifier = {
+    "clf": ExtraTreeClassifier,
+    "grid": decision_tree_classifier_grid,
+    "name": "extra_tree",
+    "max_complexity": 100000 * 10
+}
+etree_regressor = {
+    "clf": ExtraTreeRegressor,
+    "grid": decision_tree_regressor_grid,
+    "name": "extra_tree",
+    "max_complexity": 100000 * 10
+}
 
 options = {
-    "regression": [ridge_regression, rf_regression, knn_regression],
-    "classification": [ridge_classification, rf_classification, knn_classification],
+    "regression": [ridge_regression, rf_regression, knn_regression, dtree_regressor, etree_regressor],
+    "classification": [ridge_classification, rf_classification, knn_classification, dtree_classifier, etree_classifier],
 }
 
 xgb_grid = {
@@ -150,7 +193,7 @@ try:
     }
     options["classification"].append(lgb_classification)
     options["regression"].append(lgb_regression)
-except ImportError:
+except Exception as e:
     pass
 
 

@@ -11,7 +11,7 @@ import scipy.sparse
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.feature_extraction import DictVectorizer
-from sklearn.preprocessing import OneHotEncoder, robust_scale
+from sklearn.preprocessing import OneHotEncoder, LabelEncoder, robust_scale
 from dateutil.parser import parse
 from xtoy.utils import is_numeric
 from xtoy.utils import is_integer
@@ -59,7 +59,8 @@ class DataFrameImputer(TransformerMixin):
         return val
 
     def fit(self, X, y=None):
-        self.fill = pd.Series([self.get_impute_val(X[c]) for c in X], index=X.columns)
+        self.fill = pd.Series([self.get_impute_val(X[c])
+                               for c in X], index=X.columns)
         return self
 
     def transform(self, X, y=None):
@@ -69,16 +70,19 @@ class DataFrameImputer(TransformerMixin):
 class Featurizer(BaseEstimator, TransformerMixin):
     def __init__(
         self,
-        count_vectorizer_kwargs={"max_features": 15, "token_pattern": r"(?u)\b\w+\b"},
+        count_vectorizer_kwargs={"max_features": 15,
+                                 "token_pattern": r"(?u)\b\w+\b"},
         max_unique_for_discrete=15,
-        date_atts=("year", "month", "day", "weekday", "hour", "minute", "second"),
+        date_atts=("year", "month", "day", "weekday",
+                   "hour", "minute", "second"),
         regex_vectorizer=None,
         regex_patterns=None,
         sparse=True,
     ):
         self.count_vectorizer = CountVectorizer(**count_vectorizer_kwargs)
         self.regex_vectorizer = (
-            regex_vectorizer or RegexVectorizer(regex_patterns) if regex_patterns else None
+            regex_vectorizer or RegexVectorizer(
+                regex_patterns) if regex_patterns else None
         )
         self.max_unique_for_discrete = max_unique_for_discrete
         self.one_hot_encoder = None
@@ -92,6 +96,9 @@ class Featurizer(BaseEstimator, TransformerMixin):
         if not isinstance(X, pd.DataFrame):
             X = pd.DataFrame(X)
         columns = list(X.columns)
+        for i, col in enumerate(columns):
+            columns[i] = col.replace('_', '-').replace(' ', '-')
+        X = pd.DataFrame(X, columns=columns)
         self.drop_vars = []
         self.count_vecs = []
         self.regex_vecs = []
@@ -102,6 +109,8 @@ class Featurizer(BaseEstimator, TransformerMixin):
         self.missing_col_names = []
         self.feature_names_ = []
         self.feature_indices_ = []
+        self.categorical_names = {}
+        self.categorical_label_encoder = {}
         for col_name in X.columns[np.any(pd.isnull(X), axis=0)]:
             self.feature_names_.append(str(col_name) + "_missing")
             self.missing_col_names.append(col_name)
@@ -121,14 +130,17 @@ class Featurizer(BaseEstimator, TransformerMixin):
             if isinstance(X[col][0], pd.Timestamp):
                 self.add_date_var(i, col)
             elif is_numeric(X[col]):
-                if len(set(X[col])) > 2:
-                    self.feature_names_.append("{}_{}_continuous".format(col, i))
+                num_unique = len(set(X[col]))
+                if is_integer(X[col]) and 2 <= num_unique <= self.max_unique_for_discrete:
+                    self.ohe_indices[i] = True
+                    continue
+                elif num_unique > 2:
+                    self.feature_names_.append(
+                        "{}_continuous_{}".format(col, i))
                 else:
                     self.feature_names_.append("{}_{}_dummy".format(col, i))
                 self.feature_indices_.append(i)
                 num_unique = len(np.unique(X[col]))
-                if is_integer(X[col]) and 3 <= num_unique <= self.max_unique_for_discrete:
-                    self.ohe_indices[i] = True
                 self.numeric_indices[i] = True
             # maybe date
             else:
@@ -136,10 +148,19 @@ class Featurizer(BaseEstimator, TransformerMixin):
                     try:
                         parse(x)
                     except ValueError:
+                        num_unique = len(np.unique(X[col]))
+                        if 2 <= num_unique and num_unique <= self.max_unique_for_discrete:
+                            self.ohe_indices[i] = True
                         break
                 else:
                     self.add_date_var(i, col)
-
+        for i, (ohed, col) in enumerate(zip(self.ohe_indices, X)):
+            if ohed:
+                le = LabelEncoder()
+                le.fit(X[col])
+                X[col] = le.transform(X[col])
+                self.categorical_names[col] = le.classes_.tolist()
+                self.categorical_label_encoder[col] = le
         for i, (ohed, col) in enumerate(zip(self.ohe_indices, X)):
             if (
                 self.count_vectorizer
@@ -149,7 +170,8 @@ class Featurizer(BaseEstimator, TransformerMixin):
                 and not self.date_vars[i]
             ):
                 countvec = copy.copy(self.count_vectorizer)
-                countvec.fit(["" if isinstance(x, float) else x for x in X[col]])
+                countvec.fit(
+                    ["" if isinstance(x, float) else x for x in X[col]])
                 self.count_vecs.append(countvec)
                 cv_var_names = [
                     "{}_countvec_{}_{}_{}".format(col, x, i, j)
@@ -172,7 +194,8 @@ class Featurizer(BaseEstimator, TransformerMixin):
                 regex_vec.dict_vectorizer = DictVectorizer(
                     **self.regex_vectorizer.dict_vectorizer.get_params()
                 )
-                regex_vec.fit(["" if isinstance(x, float) else x for x in X[col]])
+                regex_vec.fit(
+                    ["" if isinstance(x, float) else x for x in X[col]])
                 if regex_vec.get_feature_names():
                     self.regex_vecs.append(regex_vec)
                     rv_var_names = [
@@ -197,7 +220,8 @@ class Featurizer(BaseEstimator, TransformerMixin):
                 X.columns[self.ohe_indices],
             ):
                 num_ohe_feat = len(feat.intersection(range(l, h)))
-                self.feature_names_.extend(["{}_OHE_{}".format(v, j) for j in range(num_ohe_feat)])
+                self.feature_names_.extend(
+                    ["{}_OHE_{}".format(v, j) for j in range(num_ohe_feat)])
                 self.feature_indices_.extend([i] * num_ohe_feat)
         self.feature_names_ = np.array(self.feature_names_)
         self.feature_indices_ = np.array(self.feature_indices_)
@@ -205,13 +229,18 @@ class Featurizer(BaseEstimator, TransformerMixin):
 
     def add_date_var(self, i, col):
         self.date_vars[i] = True
-        date_var_names = ["{}_date_{}".format(col, x) for j, x in enumerate(self.date_atts)]
+        date_var_names = ["{}_date_{}".format(
+            col, x) for j, x in enumerate(self.date_atts)]
         self.feature_names_.extend(date_var_names)
         self.feature_indices_.append(i)
 
     def transform(self, X, y=None):
         if not isinstance(X, pd.DataFrame):
             X = pd.DataFrame(X)
+        columns = list(X.columns)
+        for i, col in enumerate(columns):
+            columns[i] = col.replace('_', '-').replace(' ', '-')
+        X = pd.DataFrame(X, columns=columns)
         res = []
         cvs = []
         rvs = []
@@ -229,14 +258,16 @@ class Featurizer(BaseEstimator, TransformerMixin):
                 if not isinstance(dtimes[0], pd.Timestamp):
                     dtimes = [parse(x) for x in X[col]]
                 for a in self.date_atts:
-                    dcol = [x.weekday() if a == "weekday" else getattr(x, a) for x in dtimes]
+                    dcol = [x.weekday() if a == "weekday" else getattr(x, a)
+                            for x in dtimes]
                     res.append(dcol)
 
         for cv, col in zip(self.count_vecs, X):
             if cv:
                 cvs.append(
                     cv.transform(
-                        ["" if isinstance(x, (np.int64, int, float)) else x for x in X[col]]
+                        ["" if isinstance(x, (np.int64, int, float))
+                         else x for x in X[col]]
                     )
                 )
 
@@ -244,7 +275,8 @@ class Featurizer(BaseEstimator, TransformerMixin):
             if rv:
                 rvs.append(
                     rv.transform(
-                        ["" if isinstance(x, (np.int64, int, float)) else x for x in X[col]]
+                        ["" if isinstance(x, (np.int64, int, float))
+                         else x for x in X[col]]
                     )
                 )
 
@@ -257,7 +289,11 @@ class Featurizer(BaseEstimator, TransformerMixin):
         if rvs:
             combined.extend(rvs)
         if np.any(self.ohe_indices):
-            ohd = self.one_hot_encoder.transform(X[X.columns[self.ohe_indices]])
+            for cat_col in self.categorical_names:
+                X[cat_col] = self.categorical_label_encoder[cat_col].transform(
+                    X[cat_col])
+            ohd = self.one_hot_encoder.transform(
+                X[X.columns[self.ohe_indices]])
             combined = combined + [ohd]
 
         result = scipy.sparse.hstack(combined).tocsr()

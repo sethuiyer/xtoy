@@ -18,6 +18,9 @@ from xtoy.utils import get_cv_splits
 from xtoy.utils import calculate_complexity
 
 from sklearn.neighbors.base import NeighborsBase
+import lime
+import lime.lime_tabular
+import traceback
 
 try:
     import pickle
@@ -125,10 +128,88 @@ class Toy:
                 print("Stopped by user. {} models trained.".format(len(evos)))
         self.evos = evos
         self.best_evo = sorted(self.evos, key=lambda x: x[0])[-1][1]
+        self.explainer = lime.lime_tabular.LimeTabularExplainer(X.values, feature_names=self.feature_names_.tolist(), class_names=None, verbose=False, mode=self.cl_or_reg)
         # import warnings
         # warnings.warn("best: {}".format(self.best_evo.best_estimator_))
         print("best: {}".format(self.best_evo.best_estimator_))
-        return self.best_evo.best_estimator_
+
+    def _change_explanation(self, exp_df, test_sample):
+        exp_str = exp_df['Explanation']
+        exp_str_list = exp_str.split(' ')
+        date_feature  = None
+        print exp_str_list
+        if len(exp_str_list) == 5:
+            op = 'in_range'
+            thresh = '('+str(exp_str_list[0])+'---'+str(exp_str_list[-1])+')'
+            feature = exp_str_list[2].split('_')[0]
+            col_kind = exp_str_list[2].split('_')[1]
+            if col_kind == 'OHE':
+                exp_df['Explanation'] = ''
+                exp_df['Feature'] = feature
+            return exp_df
+        else:
+            col_kind = exp_str_list[0].split('_')[1]
+            if col_kind == 'continuous':
+                op = exp_str_list[1]
+                thresh = exp_str_list[2]
+                feature = exp_str_list[0].split('_')[0]
+            elif col_kind == 'OHE':
+                if exp_str_list[1] == '<=':
+                    op = '!='
+                else:
+                    op = '=='
+                feature = exp_str_list[0].split('_')[0]
+                encoded_label = exp_str_list[0].split('_')[-1]
+                thresh = self.featurizer.categorical_names[feature][int(encoded_label)]
+            elif col_kind == 'date':
+                op = exp_str_list[1]
+                thresh = exp_str_list[2]
+                feature = exp_str_list[0].split('_')[0]
+                date_feature = exp_str_list[0].split('_')[-1]
+            else:
+                if exp_str_list[1] == '<=':
+                    op = 'doesn\'t have'
+                else:
+                    op = 'has'
+                feature = exp_str_list[0].split('_')[0]
+                thresh = exp_str_list[0].split('_')[2]
+        actual_val = str(test_sample[feature].iloc[0])
+        if col_kind == 'date':
+	        feature = '{}_{}'.format(feature, date_feature)
+        changed_string = '{}(={}) {} {} '.format(feature, actual_val, op, thresh)
+        exp_df['Explanation'] = changed_string
+        exp_df['Feature'] = feature
+        return exp_df
+
+    def _explain_prediction(self, X):
+        X = self.featurizer.transform(X).A
+        X = X[0]
+        if self.cl_or_reg == 'regression':
+            predict_function = self.best_evo.predict
+        else:
+            predict_function = self.best_evo.predict_proba
+        exp = self.explainer.explain_instance(X, predict_function, num_features = 5, num_samples=1000)
+        return exp.as_list()
+
+    def explain_prediction(self, X):
+        explanations = []
+        explanations.extend(self._explain_prediction(X))
+        explanations.extend(self._explain_prediction(X))
+        explanations.extend(self._explain_prediction(X))
+        explanations.extend(self._explain_prediction(X))
+        exp_df = pd.DataFrame(data=explanations, columns=['Explanation','Importance_Value'])
+        exp_df = pd.DataFrame(exp_df.groupby('Explanation', as_index=False)['Importance_Value'].mean())
+        exp_df['Polarity'] = exp_df['Importance_Value'].apply(lambda x: int(x > 0))
+        exp_df['Importance_Value'] = exp_df['Importance_Value'].apply(lambda x: abs(x))
+        exp_df.sort_values(by='Importance_Value',ascending=False,inplace=True)
+        changed_exp_df=exp_df.apply(lambda x: self._change_explanation(x, X), axis=1)
+        changed_grouped_exp_df = changed_exp_df.groupby('Feature')['Explanation'].unique().apply(lambda x: ', '.join(x)).reset_index()
+        changed_grouped_exp_df['Importance_Value'] = changed_exp_df.groupby('Feature', as_index=False)['Importance_Value'].mean()['Importance_Value']
+        changed_grouped_exp_df['Polarity'] = changed_exp_df.groupby('Feature', as_index=False)['Polarity'].mean()['Polarity']
+        changed_grouped_exp_df.sort_values(by='Importance_Value', ascending=False, inplace=True)
+        changed_grouped_exp_df.Importance_Value = changed_grouped_exp_df.Importance_Value/changed_grouped_exp_df.Importance_Value.sum()
+        return changed_grouped_exp_df
+
 
     def predict(self, X):
         X = self.featurizer.transform(X).A
@@ -203,7 +284,7 @@ class Toy:
             data = list(zip(importances, self.feature_names_))
         else:
             pdata = pd.DataFrame(
-                {"features": self._feature_name[self.feature_indices_], "importances": importances}
+                {"features": self._feature_name[self.feature_indices_], "importances": importances[self.feature_indices_]}
             )
             agg = pdata.groupby(["features"]).agg(aggregation)
             data = list(zip(agg["importances"].values, agg.index))

@@ -271,7 +271,7 @@ class EvolutionaryAlgorithmSearchCV(BaseSearchCV):
         gene_mutation_prob=0.1,
         gene_crossover_prob=0.5,
         tournament_size=3,
-        generations_number=10,
+        generations_number=15,
         gene_type=None,
         n_jobs=1,
         iid=True,
